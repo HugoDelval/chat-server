@@ -1,11 +1,11 @@
-# Simple multithreaded TCP server
+# chat TCP server
 
-The repository implements a simple TCP multithreaded server for the CS4032 Trinity course.
+The repository implements a simple TCP multithreaded chat server for the CS4032 Trinity course.
 
 ## Dependencies
 
 * stack
-* haskell libs (cf *multithreaded-server.cabal*)
+* haskell libs (cf *chat-server.cabal*)
  * base
  * network
  * parallel-io
@@ -19,8 +19,8 @@ Note : Everything is installed when running ```stack build``` (or when running `
 ## Run using stack
 
 ```bash
-git clone https://github.com/HugoDelval/distributed-system-server
-cd distributed-system-server
+git clone https://github.com/HugoDelval/chat-server
+cd chat-server
 ./compile.sh
 ./start.sh <PORT>
 ```
@@ -28,8 +28,8 @@ cd distributed-system-server
 ## Run on OpenNebula using Docker + Docker-machine
 
 ```bash
-docker pull hugodelval/server
-docker run -i -w /app -p 0.0.0.0:8000:8000 --add-host dockerhost:`docker-machine ip test` hugodelval/server /usr/local/bin/multithreaded-server-exe 8000
+docker pull hugodelval/chat-server
+docker run -i -w /app -p 0.0.0.0:8000:8000 --add-host dockerhost:`docker-machine ip test` hugodelval/server /usr/local/bin/chat-server-exe 8000
 ```
 
 ## Author
