@@ -66,6 +66,6 @@ extra-package-dbs: []
 # compiler-check: newer-minor
 image:
   container:
-    name: hugodelval/server
+    name: hugodelval/chat-server
     # Base it on the stack-run images
     base: fpco/stack-run

@@ -1,3 +1,3 @@
 #!/bin/bash
 
-stack exec multithreaded-server-exe $1
+stack exec chat-server-exe $1
