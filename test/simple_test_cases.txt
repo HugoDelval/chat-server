@@ -1,0 +1,19 @@
+__
+JOIN_CHATROOM: theChatRoom
+CLIENT_IP: 0
+PORT: 0
+CLIENT_NAME: hugo
+__
+__
+LEAVE_CHATROOM: 1
+JOIN_ID: 2
+CLIENT_NAME: hugo
+__
+__
+CHAT: 1
+JOIN_ID: 2
+CLIENT_NAME: hugo
+MESSAGE: coucou
+ça va bien ?
+
+__

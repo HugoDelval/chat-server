@@ -22,43 +22,54 @@ main = do
     bind sock (SockAddrInet (toEnum $ read port) iNADDR_ANY)   -- listen on TCP port given by user.
     let nbThreads = 5
     listen sock (nbThreads*2)                                  -- queue of 10 connections max
-    chan <- newChan
+    killedChan <- newChan
     withPool nbThreads $ 
-        \pool -> parallel_ pool (replicate nbThreads (mainLoop sock port chan))
+        \pool -> parallel_ pool (replicate nbThreads (server sock port killedChan))
     putStrLn "Server killed. See you !"
 
-mainLoop :: Socket -> String -> Chan Bool -> IO ()
-mainLoop sock port chan = do
+server :: Socket -> String -> Chan Bool -> IO ()
+server sock port killedChan = do
     putStrLn "Waiting for incoming connection..."
     conn <- try (accept sock) :: IO (Either SomeException (Socket, SockAddr))  -- try to accept a connection and handle it
     case conn of
         Left  _    -> putStrLn "Socket is now closed. Exiting."
         Right conn -> do
             putStrLn "Got a client !"
-            runConn conn sock port chan  -- run our server's logic, then
-            mainLoop sock port chan      -- repeat
+            runClient conn sock port killedChan                -- run our client's logic, then
+            server sock port killedChan                        -- repeat
 
-runConn :: (Socket, SockAddr) -> Socket -> String -> Chan Bool -> IO ()
-runConn (sock, addr) originalSocket port chan = do
+runClient :: (Socket, SockAddr) -> Socket -> String -> Chan Bool -> IO ()
+runClient (sock, addr) originalSocket port killedChan = do
     hdl <- socketToHandle sock ReadWriteMode
     hSetBuffering hdl LineBuffering
     handle (\(SomeException _) -> return ()) $ fix $ \loop -> do
-        (kill, timedOut, line) <- waitForInput hdl chan 0
+        (kill, timedOut, line) <- waitForInput hdl killedChan 0
         when (timedOut) (putStrLn "Client timed out")
         when (kill || timedOut) (return ())
         let commandAndArgs = splitOn " " (init line)
         let command = head commandAndArgs
         let args = intercalate " " $ tail commandAndArgs 
         case command of
-            "KILL_SERVICE"   -> do
-                writeChan chan True
-                threadDelay 500000 -- 500ms
+            "KILL_SERVICE"    -> do
+                writeChan killedChan True
+                threadDelay 200000 -- 200ms
                 killService originalSocket
-            "HELO"           -> helo hdl args port >> loop
-            "JOIN_CHATROOM:" -> do
-                error <- join hdl args
+            "HELO"            -> do
+                helo hdl args port
+                loop
+            "JOIN_CHATROOM:"  -> do
+                error <- join hdl args port
                 unless error loop
-            _                -> otherCommand hdl line
+            "LEAVE_CHATROOM:" -> do
+                error <- leave hdl args
+                unless error loop
+            "DISCONNECT:"     -> do
+                error <- disconnect hdl args
+                unless error loop
+            "CHAT:"           -> do
+                error <- chat hdl args
+                unless error loop
+            _                 -> otherCommand hdl line
     -- shutdown sock ShutdownBoth 
     hClose hdl
     putStrLn "Client disconnected"

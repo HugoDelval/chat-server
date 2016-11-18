@@ -29,18 +29,18 @@ nonBlockingRead hdl currentS = do
       return next
 
 waitForInput :: Handle -> Chan Bool -> Int -> IO (Bool, Bool, String)
-waitForInput hdl chan waitingTime = do
-  let socketTimedOut = waitingTime > getWaitBySocket*50 -- 50*80ms = 4000ms = 4s
+waitForInput hdl killedChan waitingTime = do
+  let socketTimedOut = waitingTime > getWaitBySocket*100 -- 100*80ms = 8000ms = 8s
   if socketTimedOut 
     then (return (False, True, ""))
     else do
-      stillAlive <- isEmptyChan chan
+      stillAlive <- isEmptyChan killedChan
       if stillAlive
         then do
           request <- handle (\(SomeException _) -> return "") $ fix $ (return $ nonBlockingRead hdl "")
           if null request
             then do
-              res <- waitForInput hdl chan (waitingTime + getWaitBySocket)
+              res <- waitForInput hdl killedChan (waitingTime + getWaitBySocket)
               return res
             else do
               return (False, False, request)
