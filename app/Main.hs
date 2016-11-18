@@ -1,23 +1,18 @@
 module Main where
 
 import Network.Socket
-import Network.BSD
 import System.IO
 import System.Environment
-import System.Directory
 import Control.Exception
 import Control.Monad.Fix (fix)
 import Control.Concurrent.ParallelIO.Local
 import Control.Concurrent
-import Control.Concurrent.Chan
 import Data.List
-import Data.IP
-import Foreign.Ptr
-import Foreign.C.String
-import Foreign.C.Types
-import Foreign.Marshal.Alloc (mallocBytes, free)
 import Data.List.Split
-import Control.Monad (when)
+import Control.Monad (when, unless)
+
+import Client
+import Utils
 
 main :: IO ()
 main = do
@@ -31,7 +26,7 @@ main = do
     withPool nbThreads $ 
         \pool -> parallel_ pool (replicate nbThreads (mainLoop sock port chan))
     putStrLn "Server killed. See you !"
-    
+
 mainLoop :: Socket -> String -> Chan Bool -> IO ()
 mainLoop sock port chan = do
     putStrLn "Waiting for incoming connection..."
@@ -48,66 +43,23 @@ runConn (sock, addr) originalSocket port chan = do
     hdl <- socketToHandle sock ReadWriteMode
     hSetBuffering hdl LineBuffering
     handle (\(SomeException _) -> return ()) $ fix $ \loop -> do
-        (kill, line) <- waitForInput hdl chan
-        when kill (return ())
+        (kill, timedOut, line) <- waitForInput hdl chan 0
+        when (timedOut) (putStrLn "Client timed out")
+        when (kill || timedOut) (return ())
         let commandAndArgs = splitOn " " (init line)
         let command = head commandAndArgs
         let args = intercalate " " $ tail commandAndArgs 
         case command of
-            "KILL_SERVICE" -> do
+            "KILL_SERVICE"   -> do
                 writeChan chan True
                 threadDelay 500000 -- 500ms
                 killService originalSocket
-            "HELO"         -> helo hdl addr args port >> loop
-            _              -> otherCommand hdl line
-    shutdown sock ShutdownBoth 
+            "HELO"           -> helo hdl args port >> loop
+            "JOIN_CHATROOM:" -> do
+                error <- join hdl args
+                unless error loop
+            _                -> otherCommand hdl line
+    -- shutdown sock ShutdownBoth 
     hClose hdl
+    putStrLn "Client disconnected"
 
-waitForInput :: Handle -> Chan Bool -> IO (Bool, String)
-waitForInput hdl chan = do
-  stillAlive <- isEmptyChan chan
-  if stillAlive
-    then do
-      request <- handle (\(SomeException _) -> return "") $ fix $ \getReq -> do
-        buf <- mallocBytes 4096 :: IO (Ptr CChar)
-        nbRead <- hGetBufNonBlocking hdl buf 4096 
-        request <- peekCStringLen (buf, nbRead)
-        free buf
-        return request
-      if null request
-        then do
-          res <- waitForInput hdl chan
-          return res
-        else do
-          return (False, request)
-    else return (True, [])
-
-sendResponse :: Handle -> String -> IO ()
-sendResponse hdl resp = do
-    hSetBuffering hdl $ BlockBuffering $ Just (length resp)
-    hPutStr hdl resp
-
-getHostNameIfDockerOrNot :: IO String
-getHostNameIfDockerOrNot = do
-    weAreInDocker <- doesFileExist "/.dockerenv"
-    host <- if weAreInDocker 
-        then getHostByName "dockerhost" 
-        else (getHostName >>= getHostByName)
-    return $ show $ fromHostAddress $ head $ hostAddresses host
-
-killService :: Socket -> IO ()
-killService originalSocket = do
-    putStrLn "Killing Service..."
-    shutdown originalSocket ShutdownBoth
-    close originalSocket
-
-helo :: Handle -> SockAddr -> String -> String -> IO ()
-helo hdl addr text port = do
-    putStrLn $ "Responding to HELO command with params : " ++ text
-    hostname <- getHostNameIfDockerOrNot
-    sendResponse hdl $ "HELO " ++ text ++ "\nIP:" ++ hostname ++ "\nPort:" ++ port ++ "\nStudentID:16336620"
-
-otherCommand :: Handle -> String -> IO ()
-otherCommand hdl param = do
-    putStrLn $ "Received unknown query : " ++ param
-    -- sendResponse hdl $ "Command not implemented yet : " ++ param ++ "\nStay tuned !"
