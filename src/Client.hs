@@ -192,11 +192,13 @@ disconnect hdl args clients = do
                     htCTRefToChan <- H.new :: IO (HashTable Int (Chan String))
                     return (Client "" htCTRefToChan (-1), False)
             if not success then do
+                putMVar clients (Clients lastClientId theClients clientsNames)
                 sendError hdl 14 "Client name does not exist."
                 return error
             else do
                 messages <- H.foldM (sendLeaveMessages clientNameGivenByUser) [] channels
                 H.delete theClients joinId
+                H.delete clientsNames clientName
                 let messagesSortedAll = sortOn (\(m,chan,id) -> id) messages
                 let messagesSorted = map (\(m,chan,id) -> m) $ messagesSortedAll 
                 let chans = map (\(m,chan,id) -> chan) $ messagesSortedAll 
@@ -251,6 +253,7 @@ chat hdl args clients = do
                             htCTRefToChan <- H.new :: IO (HashTable Int (Chan String))
                             return (Client "" htCTRefToChan (-1), True)
                     if notFound then do
+                        putMVar clients (Clients lastClientId theClients clientsNames)
                         sendError hdl 13 "Unknown JOIN_ID for CHAT."
                         return error
                     else do
