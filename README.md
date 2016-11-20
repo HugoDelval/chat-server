@@ -29,7 +29,7 @@ cd chat-server
 
 ```bash
 docker pull hugodelval/chat-server
-docker run -i -w /app -p 0.0.0.0:8000:8000 --add-host dockerhost:`docker-machine ip test` hugodelval/server /usr/local/bin/chat-server-exe 8000
+docker run -i -w /app -p 0.0.0.0:8000:8000 --add-host dockerhost:`docker-machine ip test` hugodelval/chat-server /usr/local/bin/chat-server-exe 8000
 ```
 
 ## Author
