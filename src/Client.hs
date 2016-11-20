@@ -10,22 +10,6 @@ import Control.Concurrent.MVar
 import Control.Concurrent
 import qualified Data.HashTable.IO as H
 
-type HashTable k v = H.CuckooHashTable k v
-
-data Client    = Client { clientName :: String
-                        , subs       :: HashTable Int (Chan String)
-                        , joinId     :: Int
-                        }
-data Clients   = Clients { lastClientId   :: Int
-                         , theClients     :: HashTable Int Client
-                         , clientsNames   :: HashTable String Int
-                         }
-data ChatRoom  = ChatRoom Int (Chan String)
-data ChatRooms = ChatRooms { chatRoomFromId     :: HashTable Int ChatRoom
-                           , chatRoomIdFromName :: HashTable String Int
-                           , numberOfChatRooms  :: Int  
-                           }  
-
 
 -- Default method (the "otherwise" case)
 otherCommand :: Handle -> String -> IO ()
@@ -48,14 +32,14 @@ helo hdl text port = do
     sendResponse hdl $ "HELO " ++ text ++ "\nIP:" ++ hostname ++ "\nPort:" ++ port ++ "\nStudentID:16336620"
 
 -- The client asks to join a chatroom
-join :: Handle -> String -> String -> MVar Clients -> MVar ChatRooms -> IO Bool
+join :: Handle -> String -> String -> MVar Clients -> MVar ChatRooms -> IO (Bool, Int)
 join hdl args port clients chatrooms = do
     clog $ "Receiving JOIN command with arguments : " ++ args
     let error = True
     let lines = splitOn "\n" args
     if not $ (length lines) == 4 then do 
         sendError hdl 1 $ "Bad arguments for JOIN_CHATROOM."
-        return error
+        return (error, -1)
     else do
         let chatRoomName         = lines !! 0
         let clientIP             = lines !! 1
@@ -66,7 +50,7 @@ join hdl args port clients chatrooms = do
         let clientName           = intercalate " " $ tail clientNameLineParsed
         if not ((clientIP == "CLIENT_IP: 0") && (clientPort == "PORT: 0") && (clientNameHeader == "CLIENT_NAME:")) then do
             sendError hdl 2 "Bad arguments for JOIN_CHATROOM." 
-            return error
+            return (error, -1)
         else do
             (ChatRooms theChatrooms theChatroomsNames nbCR) <- takeMVar chatrooms
             wantedChatRoomID                        <- H.lookup theChatroomsNames chatRoomName
@@ -76,7 +60,7 @@ join hdl args port clients chatrooms = do
                     clientChanChat <- case wantedChatRoom of
                         Just (ChatRoom nbSubscribers chatChan) -> do
                             clientChanChat <- dupChan chatChan
-                            H.insert theChatrooms chatRoomRef (ChatRoom (nbSubscribers+1) clientChanChat)
+                            H.insert theChatrooms chatRoomRef (ChatRoom (nbSubscribers+1) chatChan)
                             return clientChanChat
                         Nothing -> do
                             clog "/!\\ /!\\ /!\\ ------ This should not happen! ------ /!\\ /!\\ /!\\"
@@ -110,21 +94,22 @@ join hdl args port clients chatrooms = do
             H.insert channels roomRef clientChanChat
             H.insert theClients joinId (Client clientName channels joinId)
             putMVar clients (Clients joinId theClients clientsNames)
-            writeChan clientChanChat $ clientName ++ " has joined the channel."
+            writeChan clientChanChat $ "CHAT: " ++ (show roomRef) ++ "\nCLIENT_NAME: " ++ clientName ++ "\nMESSAGE: " ++ clientName ++ " has joined this chatroom.\n\n"
             serverIP <- getHostNameIfDockerOrNot
             let resp = "JOINED_CHATROOM: " ++ chatRoomName ++ "\nSERVER_IP: " ++ serverIP ++ "\nPORT: " ++ port ++ "\nROOM_REF: " ++ (show roomRef) ++ "\nJOIN_ID: " ++ (show joinId) ++ "\n"
             sendResponse hdl resp
-            return False
+            return (False, joinId)
 
 
 -- The client asks to leave a chatroom
-leave :: Handle -> String -> MVar Clients -> IO Bool
+leave :: Handle -> String -> MVar Clients -> IO (Bool, Int)
 leave hdl args clients = do
+    clog $ "Receiving LEAVE message with args : " ++ args
     let error = True
     let lines = splitOn "\n" args
     if not $ (length lines) == 3 then do 
         sendError hdl 3 $ "Bad arguments for LEAVE_CHATROOM."
-        return error
+        return (error, -1)
     else do
         let chatRoomRefStr        = lines !! 0
         let joinIdLine            = lines !! 1
@@ -139,13 +124,13 @@ leave hdl args clients = do
         let chatRoomRefsCasted    = reads chatRoomRefStr :: [(Int, String)]
         if not $ ((length joinIdsCasted) == 1 && (length chatRoomRefsCasted) == 1) then do
             sendError hdl 4 $ "Bad arguments for LEAVE_CHATROOM."
-            return error
+            return (error, -1)
         else do
             let (joinIdGivenByUser, restJ) = head joinIdsCasted
             let (chatRoomRef, restR)       = head chatRoomRefsCasted
             if not ((null restJ) && (null restR) && (clientNameHeader == "CLIENT_NAME:") && (joinIdHeader == "JOIN_ID:")) then do 
                 sendError hdl 5 "Bad arguments for LEAVE_CHATROOM." 
-                return error
+                return (error, -1)
             else do
                 (Clients lastClientId theClients clientsNames) <- takeMVar clients
                 maybeClient                                    <- H.lookup theClients joinIdGivenByUser
@@ -156,23 +141,26 @@ leave hdl args clients = do
                         return (Client "" htCTRefToChan (-1), True)
                 if notFound then do 
                     sendError hdl 12 "Unknown JOIN_ID for LEAVE_CHATROOM."
-                    return error
+                    return (error, -1)
                 else do
                     maybeChannel <- H.lookup channels chatRoomRef
+                    let message = "CHAT: " ++ (show chatRoomRef) ++ "\nCLIENT_NAME: " ++ clientName ++ "\nMESSAGE: " ++ clientName ++ " has left this chatroom.\n\n"
                     case maybeChannel of 
                         Just channel -> do
                             H.delete channels chatRoomRef
-                            writeChan channel $ clientName ++ " is leaving the channel."
+                            writeChan channel message
                         Nothing      -> return ()
                     H.insert theClients joinId (Client clientName channels joinId)
                     putMVar clients (Clients lastClientId theClients clientsNames)
-                    let resp = "LEFT_CHATROOM: " ++ (show chatRoomRef) ++ "\nJOIN_ID: " ++ (show joinId)
+                    let resp = "LEFT_CHATROOM: " ++ (show chatRoomRef) ++ "\nJOIN_ID: " ++ (show joinId) ++ "\n"
                     sendResponse hdl resp
-                    return False
+                    sendResponse hdl message
+                    return (False, joinId)
 
 -- The client disconnects
-disconnect :: Handle -> String -> IO Bool
-disconnect hdl args = do
+disconnect :: Handle -> String -> MVar Clients -> IO Bool
+disconnect hdl args clients = do
+    clog $ "Receiving DISCONNECT message with args : " ++ args
     let error = True
     let lines = splitOn "\n" args
     if not $ (length lines) == 3 then do 
@@ -184,18 +172,44 @@ disconnect hdl args = do
         let clientNameLine        = lines !! 2
         let clientNameLineParsed  = splitOn " " clientNameLine
         let clientNameHeader      = head clientNameLineParsed
-        let clientName            = intercalate " " $ tail clientNameLineParsed
+        let clientNameGivenByUser = intercalate " " $ tail clientNameLineParsed
         if not ((disconnect == "0") && (portLine == "PORT: 0") && (clientNameHeader == "CLIENT_NAME:")) then do 
             sendError hdl 7 "Bad arguments for DISCONNECT." 
             return error
         else do
-            -- remove client "clientName" from database
-            return True -- fake error, we just want to disconnect the client at this point
+            (Clients lastClientId theClients clientsNames) <- takeMVar clients
+            maybeClientId                                <- H.lookup clientsNames clientNameGivenByUser
+            (Client clientName channels joinId, success) <- case maybeClientId of
+                Just clientId -> do
+                    maybeClient       <- H.lookup theClients clientId
+                    (client, success) <- case maybeClient of
+                        Just client -> return (client, True)
+                        Nothing     -> do
+                            htCTRefToChan <- H.new :: IO (HashTable Int (Chan String))
+                            return (Client "" htCTRefToChan (-1), False)
+                    return (client, success)
+                Nothing       -> do
+                    htCTRefToChan <- H.new :: IO (HashTable Int (Chan String))
+                    return (Client "" htCTRefToChan (-1), False)
+            if not success then do
+                sendError hdl 14 "Client name does not exist."
+                return error
+            else do
+                messages <- H.foldM (sendLeaveMessages clientNameGivenByUser) [] channels
+                H.delete theClients joinId
+                let messagesSortedAll = sortOn (\(m,chan,id) -> id) messages
+                let messagesSorted = map (\(m,chan,id) -> m) $ messagesSortedAll 
+                let chans = map (\(m,chan,id) -> chan) $ messagesSortedAll 
+                clog $ show messagesSorted
+                mapM_ (sendResponse hdl) messagesSorted
+                sequence (zipWith ($) (map writeChan chans) messagesSorted)
+                putMVar clients (Clients lastClientId theClients clientsNames)
+                return True -- fake error, we just want to disconnect the client at this point
 
 
 -- The client sends a message
-chat :: Handle -> String -> IO Bool
-chat hdl args = do
+chat :: Handle -> String -> MVar Clients -> IO Bool
+chat hdl args clients = do
     let error = True
     let request = splitOn "\nMESSAGE: " args
     if not $ (length request) >= 2 then do 
@@ -213,7 +227,7 @@ chat hdl args = do
             let clientNameLine        = lines !! 2
             let clientNameLineParsed  = splitOn " " clientNameLine
             let clientNameHeader      = head clientNameLineParsed
-            let clientName            = intercalate " " $ tail clientNameLineParsed
+            let clientNameGiven       = intercalate " " $ tail clientNameLineParsed
             let joinIdLineParsed      = splitOn " " joinIdLine
             let joinIdHeader          = head joinIdLineParsed
             let joinIdStr             = intercalate " " $ tail joinIdLineParsed
@@ -223,13 +237,30 @@ chat hdl args = do
                 sendError hdl 10 $ "Bad arguments for CHAT."
                 return error
             else do
-                let (joinId, restJ)      = head joinIdsCasted
-                let (chatRoomRef, restR) = head chatRoomRefsCasted
-                if not ((null restJ) && (null restR) && (clientNameHeader == "CLIENT_NAME:") && (joinIdHeader == "JOIN_ID:")) then do 
+                let (joinIdGivenByUser, restJ) = head joinIdsCasted
+                let (chatRoomRef, restR)       = head chatRoomRefsCasted
+                if not ((null restJ) && (null restR) && (clientNameHeader == "CLIENT_NAME:") && (joinIdHeader == "JOIN_ID:")) then do
                     sendError hdl 11 "Bad arguments for CHAT."
                     return error
                 else do
-                    -- send to every clients on this chat room
-                    let resp = "CHAT: " ++ (show chatRoomRef) ++ "\nCLIENT_NAME: " ++ clientName ++ "\nMESSAGE: " ++ message
-                    sendResponse hdl resp
-                    return False
+                    (Clients lastClientId theClients clientsNames) <- takeMVar clients
+                    maybeClient                                    <- H.lookup theClients joinIdGivenByUser
+                    (Client clientName channels joinId, notFound)  <- case maybeClient of
+                        Just client -> return (client, False)
+                        Nothing     -> do
+                            htCTRefToChan <- H.new :: IO (HashTable Int (Chan String))
+                            return (Client "" htCTRefToChan (-1), True)
+                    if notFound then do
+                        sendError hdl 13 "Unknown JOIN_ID for CHAT."
+                        return error
+                    else do
+                        maybeChannel <- H.lookup channels chatRoomRef
+                        let resp = "CHAT: " ++ (show chatRoomRef) ++ "\nCLIENT_NAME: " ++ clientNameGiven ++ "\nMESSAGE: " ++ message ++ "\n"
+                        clog $ "Chat sending : " ++ resp
+                        error <- case maybeChannel of 
+                            Just channel -> do
+                                writeChan channel resp
+                                return False
+                            Nothing      -> return True
+                        putMVar clients (Clients lastClientId theClients clientsNames)
+                        return error

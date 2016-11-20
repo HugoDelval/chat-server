@@ -47,38 +47,47 @@ server sock port killedChan clients chatrooms = do
             runClient conn sock port killedChan clients chatrooms       -- run our client's logic, then
             server sock port killedChan clients chatrooms               -- repeat
 
+loopClient :: Handle -> Socket -> String -> Chan Bool -> MVar Clients -> MVar ChatRooms -> [Int] -> IO ()
+loopClient hdl originalSocket port killedChan clients chatrooms joinIds = do
+    (kill, timedOut, input) <- waitForInput hdl killedChan 0 joinIds clients
+    when (timedOut) (clog "Client timed out")
+    when (kill || timedOut) (return ())
+    let commandAndArgs = splitOn " " input
+    let command = head commandAndArgs
+    let args = intercalate " " $ tail commandAndArgs
+    case command of
+        "KILL_SERVICE"    -> do
+            writeChan killedChan True
+            threadDelay 200000 -- 200ms
+            killService originalSocket
+        "HELO"            -> do
+            helo hdl args port
+            loopClient hdl originalSocket port killedChan clients chatrooms joinIds
+        "JOIN_CHATROOM:"  -> do
+            (error, id) <- join hdl args port clients chatrooms
+            if error then return ()
+            else do
+                if id `elem` joinIds then loopClient hdl originalSocket port killedChan clients chatrooms joinIds
+                else loopClient hdl originalSocket port killedChan clients chatrooms (id:joinIds)
+        "LEAVE_CHATROOM:" -> do
+            (error, id) <- leave hdl args clients
+            if error then return ()
+            else do
+                loopClient hdl originalSocket port killedChan clients chatrooms (delete id joinIds)
+        "DISCONNECT:"     -> do
+            error <- disconnect hdl args clients
+            unless error (loopClient hdl originalSocket port killedChan clients chatrooms joinIds)
+        "CHAT:"           -> do
+            error <- chat hdl args clients
+            unless error (loopClient hdl originalSocket port killedChan clients chatrooms joinIds)
+        _                 -> otherCommand hdl input
+
+
 runClient :: (Socket, SockAddr) -> Socket -> String -> Chan Bool -> MVar Clients -> MVar ChatRooms -> IO ()
 runClient (sock, addr) originalSocket port killedChan clients chatrooms = do
     hdl <- socketToHandle sock ReadWriteMode
     hSetBuffering hdl LineBuffering
-    handle (\(SomeException _) -> return ()) $ fix $ \loop -> do
-        (kill, timedOut, input) <- waitForInput hdl killedChan 0
-        when (timedOut) (clog "Client timed out")
-        when (kill || timedOut) (return ())
-        let commandAndArgs = splitOn " " input
-        let command = head commandAndArgs
-        let args = intercalate " " $ tail commandAndArgs 
-        case command of
-            "KILL_SERVICE"    -> do
-                writeChan killedChan True
-                threadDelay 200000 -- 200ms
-                killService originalSocket
-            "HELO"            -> do
-                helo hdl args port
-                loop
-            "JOIN_CHATROOM:"  -> do
-                error <- join hdl args port clients chatrooms
-                unless error loop
-            "LEAVE_CHATROOM:" -> do
-                error <- leave hdl args clients
-                unless error loop
-            "DISCONNECT:"     -> do
-                error <- disconnect hdl args
-                unless error loop
-            "CHAT:"           -> do
-                error <- chat hdl args
-                unless error loop
-            _                 -> otherCommand hdl input
+    handle (\(SomeException _) -> return ()) $ fix $ (\loop -> (loopClient hdl originalSocket port killedChan clients chatrooms []))
     -- shutdown sock ShutdownBoth 
     hClose hdl
     clog "Client disconnected"
